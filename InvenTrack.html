@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-Time Inventory Tracker</title>
+    <!-- Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom loader styles */
+        .loader {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #4f46e5;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="bg-gray-100 font-sans p-4 sm:p-8 min-h-screen">
+
+    <div id="loading-screen" class="fixed inset-0 bg-gray-100 flex flex-col items-center justify-center z-50">
+        <div class="loader mb-4"></div>
+        <p class="text-gray-600 font-medium">Connecting to Inventory...</p>
+    </div>
+
+    <div id="app-content" class="max-w-4xl mx-auto hidden">
+        
+        <!-- Header -->
+        <header class="mb-6 p-6 bg-white rounded-lg shadow-lg">
+            <h1 class="text-3xl font-bold text-gray-900 mb-4">Real-Time Inventory Tracker</h1>
+            <p class="text-sm text-gray-500 mb-4">User ID: <span id="user-id-display">...</span></p>
+            
+            <div class="flex flex-wrap items-center gap-4">
+                <label class="relative inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 cursor-pointer transition-colors">
+                    <span id="upload-btn-text">Upload CSV</span>
+                    <input type="file" id="csv-upload" class="absolute left-0 top-0 w-full h-full opacity-0 cursor-pointer" accept=".csv">
+                </label>
+                
+                <span id="upload-message" class="text-emerald-600 text-sm font-medium hidden"></span>
+            </div>
+            <p id="error-message" class="text-red-500 text-sm mt-4 hidden"></p>
+        </header>
+
+        <!-- Dashboard -->
+        <div class="mb-6 p-6 bg-white rounded-lg shadow-lg">
+            <h2 class="text-xl font-semibold mb-4">
+                Dashboard: <span id="dashboard-category-title" class="text-indigo-600">Overall</span>
+            </h2>
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <!-- Total -->
+                <div class="p-4 bg-blue-100 rounded-lg text-center">
+                    <span id="stat-total" class="text-3xl font-bold text-blue-800">0</span>
+                    <p class="text-sm font-medium text-blue-700">Total Items</p>
+                </div>
+                <!-- Taken -->
+                <div class="p-4 bg-red-100 rounded-lg text-center">
+                    <span id="stat-taken" class="text-3xl font-bold text-red-800">0</span>
+                    <p class="text-sm font-medium text-red-700">Items Taken</p>
+                </div>
+                <!-- Not Taken -->
+                <div class="p-4 bg-emerald-100 rounded-lg text-center">
+                    <span id="stat-nottaken" class="text-3xl font-bold text-emerald-800">0</span>
+                    <p class="text-sm font-medium text-emerald-700">Items Not Taken</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Filters -->
+        <div class="mb-4 p-4 bg-white rounded-lg shadow-lg">
+            <h3 class="text-lg font-medium mb-3">Filter by Category</h3>
+            <div id="category-filters" class="flex flex-wrap gap-2">
+                <!-- Buttons injected here by JS -->
+            </div>
+        </div>
+
+        <!-- List -->
+        <main class="bg-white rounded-lg shadow-lg overflow-hidden">
+            <div class="p-6 border-b border-gray-200">
+                <h2 class="text-xl font-semibold">
+                    Item List (<span id="item-count">0</span>)
+                </h2>
+                <input 
+                    type="text" 
+                    id="search-input" 
+                    placeholder="Search by name..." 
+                    class="w-full mt-4 p-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                >
+            </div>
+            
+            <ul id="inventory-list" class="divide-y divide-gray-200">
+                <!-- Items injected here by JS -->
+            </ul>
+            <div id="empty-state" class="p-6 text-center text-gray-500 hidden">
+                No items found.
+            </div>
+        </main>
+
+    </div>
+
+    <!-- Application Logic -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js";
+        import { getFirestore, doc, collection, onSnapshot, writeBatch, query, updateDoc, getDocs } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js";
+
+        // --- Configuration ---
+        // NOTE: In a real deployment, replace the lines below with your explicit config object.
+        const firebaseConfig = typeof __firebase_config !== 'undefined' 
+            ? JSON.parse(__firebase_config) 
+            : { apiKey: "PLACEHOLDER", projectId: "PLACEHOLDER" }; 
+        
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+        // --- Initialize Firebase ---
+        let app, db, auth;
+        try {
+            app = initializeApp(firebaseConfig);
+            db = getFirestore(app);
+            auth = getAuth(app);
+        } catch (e) {
+            console.error("Firebase Init Error:", e);
+            document.getElementById('error-message').textContent = "Error initializing database. Check console.";
+            document.getElementById('error-message').classList.remove('hidden');
+        }
+
+        // --- State ---
+        const state = {
+            items: [],
+            categories: ['All'],
+            selectedCategory: 'All',
+            searchQuery: '',
+            userId: null,
+            uploading: false
+        };
+
+        // --- DOM Elements ---
+        const els = {
+            loadingScreen: document.getElementById('loading-screen'),
+            appContent: document.getElementById('app-content'),
+            userIdDisplay: document.getElementById('user-id-display'),
+            uploadBtnText: document.getElementById('upload-btn-text'),
+            csvInput: document.getElementById('csv-upload'),
+            uploadMsg: document.getElementById('upload-message'),
+            errorMsg: document.getElementById('error-message'),
+            dashboardTitle: document.getElementById('dashboard-category-title'),
+            statTotal: document.getElementById('stat-total'),
+            statTaken: document.getElementById('stat-taken'),
+            statNotTaken: document.getElementById('stat-nottaken'),
+            filterContainer: document.getElementById('category-filters'),
+            itemCount: document.getElementById('item-count'),
+            searchInput: document.getElementById('search-input'),
+            inventoryList: document.getElementById('inventory-list'),
+            emptyState: document.getElementById('empty-state')
+        };
+
+        // --- Authentication ---
+        onAuthStateChanged(auth, async (user) => {
+            if (user) {
+                state.userId = user.uid;
+                els.userIdDisplay.textContent = user.uid;
+                initDataListener();
+            } else {
+                try {
+                     if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                        await signInWithCustomToken(auth, __initial_auth_token);
+                    } else {
+                        await signInAnonymously(auth);
+                    }
+                } catch (err) {
+                    showError("Authentication failed. Please refresh.");
+                }
+            }
+        });
+
+        // --- Firestore Listener ---
+        function initDataListener() {
+            const collectionPath = `artifacts/${appId}/public/data/inventory`;
+            const q = query(collection(db, collectionPath));
+
+            onSnapshot(q, (snapshot) => {
+                const newItems = [];
+                const newCategories = new Set(['All']);
+
+                snapshot.forEach(doc => {
+                    const data = doc.data();
+                    newItems.push({ id: doc.id, ...data });
+                    if (data.category) newCategories.add(data.category);
+                });
+
+                state.items = newItems;
+                state.categories = Array.from(newCategories);
+                
+                // Hide loader, show app
+                els.loadingScreen.classList.add('hidden');
+                els.appContent.classList.remove('hidden');
+
+                renderAll();
+            }, (err) => {
+                console.error(err);
+                showError("Failed to load inventory data.");
+            });
+        }
+
+        // --- Logic: Rendering ---
+        function renderAll() {
+            renderFilters();
+            renderDashboard();
+            renderList();
+        }
+
+        function renderFilters() {
+            els.filterContainer.innerHTML = '';
+            state.categories.forEach(cat => {
+                const btn = document.createElement('button');
+                const isActive = state.selectedCategory === cat;
+                
+                // Style classes
+                const baseClasses = "px-4 py-2 text-sm font-medium rounded-full transition-all duration-150";
+                const activeClasses = "bg-indigo-600 text-white shadow-md";
+                const inactiveClasses = "bg-gray-200 text-gray-700 hover:bg-gray-300";
+                
+                btn.className = `${baseClasses} ${isActive ? activeClasses : inactiveClasses}`;
+                btn.textContent = cat;
+                btn.onclick = () => {
+                    state.selectedCategory = cat;
+                    renderAll(); // Re-render everything
+                };
+                els.filterContainer.appendChild(btn);
+            });
+        }
+
+        function renderDashboard() {
+            // Filter items for dashboard based on category (ignoring search)
+            const relevantItems = state.selectedCategory === 'All' 
+                ? state.items 
+                : state.items.filter(i => i.category === state.selectedCategory);
+
+            const total = relevantItems.length;
+            const taken = relevantItems.filter(i => i.taken).length;
+            const notTaken = total - taken;
+
+            els.dashboardTitle.textContent = state.selectedCategory === 'All' ? 'Overall' : state.selectedCategory;
+            els.statTotal.textContent = total;
+            els.statTaken.textContent = taken;
+            els.statNotTaken.textContent = notTaken;
+        }
+
+        function renderList() {
+            // 1. Filter by Category
+            let filtered = state.selectedCategory === 'All' 
+                ? state.items 
+                : state.items.filter(i => i.category === state.selectedCategory);
+
+            // 2. Filter by Search
+            if (state.searchQuery) {
+                const q = state.searchQuery.toLowerCase();
+                filtered = filtered.filter(i => i.name.toLowerCase().includes(q));
+            }
+
+            els.itemCount.textContent = filtered.length;
+            els.inventoryList.innerHTML = '';
+
+            if (filtered.length === 0) {
+                els.emptyState.classList.remove('hidden');
+                return;
+            }
+            els.emptyState.classList.add('hidden');
+
+            filtered.forEach(item => {
+                const li = document.createElement('li');
+                li.className = `p-4 flex items-center justify-between transition-all ${item.taken ? 'opacity-60 bg-gray-50' : 'bg-white'}`;
+                
+                // Logic: Show category text only if 'All' is selected
+                const showCategory = state.selectedCategory === 'All';
+                
+                li.innerHTML = `
+                    <div class="flex-1">
+                        <h3 class="text-lg font-medium text-gray-900">${esc(item.name)}</h3>
+                        ${showCategory ? `<p class="text-sm text-gray-500">${esc(item.category)}</p>` : ''}
+                    </div>
+                    <div class="flex-shrink-0 ml-4">
+                        <button 
+                            class="px-4 py-2 text-sm font-medium rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 
+                            ${item.taken 
+                                ? 'text-gray-700 bg-gray-200 hover:bg-gray-300 focus:ring-gray-400' 
+                                : 'text-white bg-teal-600 hover:bg-teal-700 focus:ring-teal-500'}"
+                            onclick="window.toggleItem('${item.id}', ${item.taken})"
+                        >
+                            ${item.taken ? 'Return' : 'Take Item'}
+                        </button>
+                    </div>
+                `;
+                els.inventoryList.appendChild(li);
+            });
+        }
+
+        // --- Logic: Actions ---
+
+        // Expose toggle function globally for inline onclick
+        window.toggleItem = async (id, currentStatus) => {
+            if (!state.userId) return;
+            try {
+                const docRef = doc(db, `artifacts/${appId}/public/data/inventory`, id);
+                await updateDoc(docRef, { taken: !currentStatus });
+            } catch (e) {
+                console.error(e);
+                showError("Failed to update item.");
+            }
+        };
+
+        // CSV Parsing
+        function parseCSV(text) {
+            const lines = text.trim().split('\n');
+            if (lines.length < 2) return [];
+            
+            const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
+            const nameIdx = headers.indexOf('name');
+            const catIdx = headers.indexOf('category');
+            
+            if (nameIdx === -1 || catIdx === -1) throw new Error("CSV must have 'name' and 'category' headers.");
+
+            const result = [];
+            for (let i = 1; i < lines.length; i++) {
+                if (!lines[i].trim()) continue;
+                const cols = lines[i].split(',');
+                const name = cols[nameIdx]?.trim();
+                const category = cols[catIdx]?.trim() || 'Uncategorized';
+                
+                if (name) result.push({ name, category, taken: false });
+            }
+            return result;
+        }
+
+        // Upload Handler
+        els.csvInput.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            setUploading(true);
+            showError(null); // Clear errors
+            
+            const reader = new FileReader();
+            reader.onload = async (evt) => {
+                try {
+                    const items = parseCSV(evt.target.result);
+                    if (items.length === 0) throw new Error("No valid items found.");
+
+                    const collectionPath = `artifacts/${appId}/public/data/inventory`;
+                    const batch = writeBatch(db);
+
+                    // 1. Delete existing
+                    const existingQ = query(collection(db, collectionPath));
+                    const snapshot = await getDocs(existingQ);
+                    snapshot.forEach(doc => batch.delete(doc.ref));
+
+                    // 2. Add new
+                    items.forEach(item => {
+                        const ref = doc(collection(db, collectionPath));
+                        batch.set(ref, item);
+                    });
+
+                    await batch.commit();
+                    
+                    showSuccess(`Successfully uploaded ${items.length} items!`);
+                    e.target.value = ''; // Reset input
+                } catch (err) {
+                    console.error(err);
+                    showError(err.message);
+                } finally {
+                    setUploading(false);
+                }
+            };
+            reader.readAsText(file);
+        });
+
+        // Search Handler
+        els.searchInput.addEventListener('input', (e) => {
+            state.searchQuery = e.target.value;
+            renderList(); // Only need to re-render list
+        });
+
+        // --- Helpers ---
+        function setUploading(isUploading) {
+            state.uploading = isUploading;
+            els.uploadBtnText.textContent = isUploading ? 'Uploading...' : 'Upload CSV';
+            els.csvInput.disabled = isUploading;
+        }
+
+        function showSuccess(msg) {
+            els.uploadMsg.textContent = msg;
+            els.uploadMsg.classList.remove('hidden');
+            setTimeout(() => els.uploadMsg.classList.add('hidden'), 5000);
+        }
+
+        function showError(msg) {
+            if (msg) {
+                els.errorMsg.textContent = msg;
+                els.errorMsg.classList.remove('hidden');
+            } else {
+                els.errorMsg.classList.add('hidden');
+            }
+        }
+
+        // HTML Escape helper
+        function esc(str) {
+            if (!str) return '';
+            return str.replace(/&/g, "&amp;")
+                      .replace(/</g, "&lt;")
+                      .replace(/>/g, "&gt;")
+                      .replace(/"/g, "&quot;")
+                      .replace(/'/g, "&#039;");
+        }
+
+    </script>
+</body>
+</html>
