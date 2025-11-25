@@ -3,11 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Real-Time Inventory Tracker</title>
+    <title>Offline Inventory Tracker (Local Storage)</title>
     <!-- Tailwind CSS for styling -->
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-        /* Custom loader styles */
         .loader {
             border: 4px solid #f3f3f3;
             border-top: 4px solid #4f46e5;
@@ -24,17 +23,14 @@
 </head>
 <body class="bg-gray-100 font-sans p-4 sm:p-8 min-h-screen">
 
-    <div id="loading-screen" class="fixed inset-0 bg-gray-100 flex flex-col items-center justify-center z-50">
-        <div class="loader mb-4"></div>
-        <p class="text-gray-600 font-medium">Connecting to Inventory...</p>
-    </div>
-
-    <div id="app-content" class="max-w-4xl mx-auto hidden">
+    <div id="app-content" class="max-w-4xl mx-auto">
         
         <!-- Header -->
         <header class="mb-6 p-6 bg-white rounded-lg shadow-lg">
-            <h1 class="text-3xl font-bold text-gray-900 mb-4">Real-Time Inventory Tracker</h1>
-            <p class="text-sm text-gray-500 mb-4">User ID: <span id="user-id-display">...</span></p>
+            <h1 class="text-3xl font-bold text-gray-900 mb-4">Offline Inventory Tracker</h1>
+            <p class="text-sm text-gray-500 mb-4">
+                Data is saved to your browser's <strong>Local Storage</strong>.
+            </p>
             
             <div class="flex flex-wrap items-center gap-4">
                 <label class="relative inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 cursor-pointer transition-colors">
@@ -42,6 +38,10 @@
                     <input type="file" id="csv-upload" class="absolute left-0 top-0 w-full h-full opacity-0 cursor-pointer" accept=".csv">
                 </label>
                 
+                <button onclick="clearData()" class="px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
+                    Clear All Data
+                </button>
+
                 <span id="upload-message" class="text-emerald-600 text-sm font-medium hidden"></span>
             </div>
             <p id="error-message" class="text-red-500 text-sm mt-4 hidden"></p>
@@ -53,17 +53,14 @@
                 Dashboard: <span id="dashboard-category-title" class="text-indigo-600">Overall</span>
             </h2>
             <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                <!-- Total -->
                 <div class="p-4 bg-blue-100 rounded-lg text-center">
                     <span id="stat-total" class="text-3xl font-bold text-blue-800">0</span>
                     <p class="text-sm font-medium text-blue-700">Total Items</p>
                 </div>
-                <!-- Taken -->
                 <div class="p-4 bg-red-100 rounded-lg text-center">
                     <span id="stat-taken" class="text-3xl font-bold text-red-800">0</span>
                     <p class="text-sm font-medium text-red-700">Items Taken</p>
                 </div>
-                <!-- Not Taken -->
                 <div class="p-4 bg-emerald-100 rounded-lg text-center">
                     <span id="stat-nottaken" class="text-3xl font-bold text-emerald-800">0</span>
                     <p class="text-sm font-medium text-emerald-700">Items Not Taken</p>
@@ -74,9 +71,7 @@
         <!-- Filters -->
         <div class="mb-4 p-4 bg-white rounded-lg shadow-lg">
             <h3 class="text-lg font-medium mb-3">Filter by Category</h3>
-            <div id="category-filters" class="flex flex-wrap gap-2">
-                <!-- Buttons injected here by JS -->
-            </div>
+            <div id="category-filters" class="flex flex-wrap gap-2"></div>
         </div>
 
         <!-- List -->
@@ -93,57 +88,28 @@
                 >
             </div>
             
-            <ul id="inventory-list" class="divide-y divide-gray-200">
-                <!-- Items injected here by JS -->
-            </ul>
+            <ul id="inventory-list" class="divide-y divide-gray-200"></ul>
             <div id="empty-state" class="p-6 text-center text-gray-500 hidden">
-                No items found.
+                No items found. Upload a CSV to get started.
             </div>
         </main>
 
     </div>
 
     <!-- Application Logic -->
-    <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-app.js";
-        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js";
-        import { getFirestore, doc, collection, onSnapshot, writeBatch, query, updateDoc, getDocs } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js";
-
-        // --- Configuration ---
-        // NOTE: In a real deployment, replace the lines below with your explicit config object.
-        const firebaseConfig = typeof __firebase_config !== 'undefined' 
-            ? JSON.parse(__firebase_config) 
-            : { apiKey: "PLACEHOLDER", projectId: "PLACEHOLDER" }; 
-        
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-
-        // --- Initialize Firebase ---
-        let app, db, auth;
-        try {
-            app = initializeApp(firebaseConfig);
-            db = getFirestore(app);
-            auth = getAuth(app);
-        } catch (e) {
-            console.error("Firebase Init Error:", e);
-            document.getElementById('error-message').textContent = "Error initializing database. Check console.";
-            document.getElementById('error-message').classList.remove('hidden');
-        }
-
+    <script>
         // --- State ---
+        const STORAGE_KEY = 'inventory_data_v1';
+        
         const state = {
             items: [],
             categories: ['All'],
             selectedCategory: 'All',
             searchQuery: '',
-            userId: null,
             uploading: false
         };
 
-        // --- DOM Elements ---
         const els = {
-            loadingScreen: document.getElementById('loading-screen'),
-            appContent: document.getElementById('app-content'),
-            userIdDisplay: document.getElementById('user-id-display'),
             uploadBtnText: document.getElementById('upload-btn-text'),
             csvInput: document.getElementById('csv-upload'),
             uploadMsg: document.getElementById('upload-message'),
@@ -159,53 +125,50 @@
             emptyState: document.getElementById('empty-state')
         };
 
-        // --- Authentication ---
-        onAuthStateChanged(auth, async (user) => {
-            if (user) {
-                state.userId = user.uid;
-                els.userIdDisplay.textContent = user.uid;
-                initDataListener();
-            } else {
+        // --- Initialization ---
+        function init() {
+            loadFromStorage();
+            renderAll();
+        }
+
+        // --- Local Storage Logic ---
+        function loadFromStorage() {
+            const raw = localStorage.getItem(STORAGE_KEY);
+            if (raw) {
                 try {
-                     if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                        await signInWithCustomToken(auth, __initial_auth_token);
-                    } else {
-                        await signInAnonymously(auth);
-                    }
-                } catch (err) {
-                    showError("Authentication failed. Please refresh.");
+                    state.items = JSON.parse(raw);
+                    updateCategories();
+                } catch (e) {
+                    console.error("Failed to parse local storage", e);
+                    state.items = [];
                 }
             }
-        });
-
-        // --- Firestore Listener ---
-        function initDataListener() {
-            const collectionPath = `artifacts/${appId}/public/data/inventory`;
-            const q = query(collection(db, collectionPath));
-
-            onSnapshot(q, (snapshot) => {
-                const newItems = [];
-                const newCategories = new Set(['All']);
-
-                snapshot.forEach(doc => {
-                    const data = doc.data();
-                    newItems.push({ id: doc.id, ...data });
-                    if (data.category) newCategories.add(data.category);
-                });
-
-                state.items = newItems;
-                state.categories = Array.from(newCategories);
-                
-                // Hide loader, show app
-                els.loadingScreen.classList.add('hidden');
-                els.appContent.classList.remove('hidden');
-
-                renderAll();
-            }, (err) => {
-                console.error(err);
-                showError("Failed to load inventory data.");
-            });
         }
+
+        function saveToStorage() {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(state.items));
+            updateCategories();
+            renderAll();
+        }
+
+        function updateCategories() {
+            const cats = new Set(['All']);
+            state.items.forEach(i => cats.add(i.category));
+            state.categories = Array.from(cats);
+        }
+
+        function clearData() {
+            if(confirm("Are you sure you want to delete all data?")) {
+                state.items = [];
+                state.categories = ['All'];
+                state.selectedCategory = 'All';
+                saveToStorage();
+                // Clear the UI
+                state.items = []; 
+                renderAll();
+            }
+        }
+        window.clearData = clearData; // Expose to global scope
 
         // --- Logic: Rendering ---
         function renderAll() {
@@ -220,7 +183,6 @@
                 const btn = document.createElement('button');
                 const isActive = state.selectedCategory === cat;
                 
-                // Style classes
                 const baseClasses = "px-4 py-2 text-sm font-medium rounded-full transition-all duration-150";
                 const activeClasses = "bg-indigo-600 text-white shadow-md";
                 const inactiveClasses = "bg-gray-200 text-gray-700 hover:bg-gray-300";
@@ -229,14 +191,13 @@
                 btn.textContent = cat;
                 btn.onclick = () => {
                     state.selectedCategory = cat;
-                    renderAll(); // Re-render everything
+                    renderAll();
                 };
                 els.filterContainer.appendChild(btn);
             });
         }
 
         function renderDashboard() {
-            // Filter items for dashboard based on category (ignoring search)
             const relevantItems = state.selectedCategory === 'All' 
                 ? state.items 
                 : state.items.filter(i => i.category === state.selectedCategory);
@@ -252,12 +213,10 @@
         }
 
         function renderList() {
-            // 1. Filter by Category
             let filtered = state.selectedCategory === 'All' 
                 ? state.items 
                 : state.items.filter(i => i.category === state.selectedCategory);
 
-            // 2. Filter by Search
             if (state.searchQuery) {
                 const q = state.searchQuery.toLowerCase();
                 filtered = filtered.filter(i => i.name.toLowerCase().includes(q));
@@ -276,7 +235,6 @@
                 const li = document.createElement('li');
                 li.className = `p-4 flex items-center justify-between transition-all ${item.taken ? 'opacity-60 bg-gray-50' : 'bg-white'}`;
                 
-                // Logic: Show category text only if 'All' is selected
                 const showCategory = state.selectedCategory === 'All';
                 
                 li.innerHTML = `
@@ -290,7 +248,7 @@
                             ${item.taken 
                                 ? 'text-gray-700 bg-gray-200 hover:bg-gray-300 focus:ring-gray-400' 
                                 : 'text-white bg-teal-600 hover:bg-teal-700 focus:ring-teal-500'}"
-                            onclick="window.toggleItem('${item.id}', ${item.taken})"
+                            onclick="window.toggleItem('${item.id}')"
                         >
                             ${item.taken ? 'Return' : 'Take Item'}
                         </button>
@@ -301,20 +259,14 @@
         }
 
         // --- Logic: Actions ---
-
-        // Expose toggle function globally for inline onclick
-        window.toggleItem = async (id, currentStatus) => {
-            if (!state.userId) return;
-            try {
-                const docRef = doc(db, `artifacts/${appId}/public/data/inventory`, id);
-                await updateDoc(docRef, { taken: !currentStatus });
-            } catch (e) {
-                console.error(e);
-                showError("Failed to update item.");
+        window.toggleItem = (id) => {
+            const itemIndex = state.items.findIndex(i => i.id === id);
+            if (itemIndex > -1) {
+                state.items[itemIndex].taken = !state.items[itemIndex].taken;
+                saveToStorage(); // Persist changes
             }
         };
 
-        // CSV Parsing
         function parseCSV(text) {
             const lines = text.trim().split('\n');
             if (lines.length < 2) return [];
@@ -331,44 +283,34 @@
                 const cols = lines[i].split(',');
                 const name = cols[nameIdx]?.trim();
                 const category = cols[catIdx]?.trim() || 'Uncategorized';
-                
-                if (name) result.push({ name, category, taken: false });
+                if (name) {
+                    // Generate a simple random ID for local use
+                    const id = 'local_' + Math.random().toString(36).substr(2, 9);
+                    result.push({ id, name, category, taken: false });
+                }
             }
             return result;
         }
 
-        // Upload Handler
-        els.csvInput.addEventListener('change', async (e) => {
+        els.csvInput.addEventListener('change', (e) => {
             const file = e.target.files[0];
             if (!file) return;
 
             setUploading(true);
-            showError(null); // Clear errors
+            showError(null); 
             
             const reader = new FileReader();
-            reader.onload = async (evt) => {
+            reader.onload = (evt) => {
                 try {
-                    const items = parseCSV(evt.target.result);
-                    if (items.length === 0) throw new Error("No valid items found.");
+                    const newItems = parseCSV(evt.target.result);
+                    if (newItems.length === 0) throw new Error("No valid items found.");
 
-                    const collectionPath = `artifacts/${appId}/public/data/inventory`;
-                    const batch = writeBatch(db);
+                    // Overwrite existing items
+                    state.items = newItems;
+                    saveToStorage();
 
-                    // 1. Delete existing
-                    const existingQ = query(collection(db, collectionPath));
-                    const snapshot = await getDocs(existingQ);
-                    snapshot.forEach(doc => batch.delete(doc.ref));
-
-                    // 2. Add new
-                    items.forEach(item => {
-                        const ref = doc(collection(db, collectionPath));
-                        batch.set(ref, item);
-                    });
-
-                    await batch.commit();
-                    
-                    showSuccess(`Successfully uploaded ${items.length} items!`);
-                    e.target.value = ''; // Reset input
+                    showSuccess(`Successfully uploaded ${newItems.length} items!`);
+                    e.target.value = ''; 
                 } catch (err) {
                     console.error(err);
                     showError(err.message);
@@ -379,10 +321,9 @@
             reader.readAsText(file);
         });
 
-        // Search Handler
         els.searchInput.addEventListener('input', (e) => {
             state.searchQuery = e.target.value;
-            renderList(); // Only need to re-render list
+            renderList();
         });
 
         // --- Helpers ---
@@ -407,16 +348,13 @@
             }
         }
 
-        // HTML Escape helper
         function esc(str) {
             if (!str) return '';
-            return str.replace(/&/g, "&amp;")
-                      .replace(/</g, "&lt;")
-                      .replace(/>/g, "&gt;")
-                      .replace(/"/g, "&quot;")
-                      .replace(/'/g, "&#039;");
+            return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
         }
 
+        // Start App
+        init();
     </script>
 </body>
 </html>
